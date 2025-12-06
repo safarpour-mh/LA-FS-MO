@@ -1,0 +1,22 @@
+\begin{table}[htbp]
+\centering
+\caption{Statistical significance of F1-score differences (Wilcoxon signed-rank test) between full and selected feature sets on biomedical datasets.}
+\label{tab:statistical_validation}
+\begin{tabular}{lccc}
+\toprule
+Dataset & Classifier & $p$-value & Significant? \\
+\midrule
+heart & SVM & 0.0625 & --- \\
+heart & KNN & 0.1250 & --- \\
+heart & RF & 0.0625 & --- \\
+\midrule
+wpbc & SVM & 1.0000 & --- \\
+wpbc & KNN & 1.0000 & --- \\
+wpbc & RF & 1.0000 & --- \\
+\midrule
+wdbc & SVM & 0.0625 & --- \\
+wdbc & KNN & 0.0625 & --- \\
+wdbc & RF & 0.4375 & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
