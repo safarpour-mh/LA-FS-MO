@@ -96,8 +96,8 @@ run run_baseline_comparison.m
 % 5. Perform statistical validation
 run run_statistical_validation.m
 
-
-Output: Results are saved to the results/ folder:
+---
+##Output: Results are saved to the results/ folder:
 *_Results.xlsx: Classification metrics (Acc, Prec, Rec, F1)
 ROC_*.pdf/png: ROC curves
 comparison_results.tex: LaTeX table for baseline comparison
