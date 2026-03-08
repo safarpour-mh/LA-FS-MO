@@ -104,13 +104,13 @@ comparison_results.tex: LaTeX table for baseline comparison
 wilcoxon_table.tex: LaTeX table for statistical tests
 
 
-⚙️ Requirements
+###⚙️ Requirements
 MATLAB Version: R2023a or later
 Toolboxes: Statistics and Machine Learning Toolbox (for fitcsvm, fitcknn, TreeBagger, cvpartition, perfcurve)
 No third-party dependencies: All code uses native MATLAB functions
 
 
-📜 License & Contributions
+###📜 License & Contributions
 License: MIT License — see LICENSE file for details.
 Contributions: Bug reports and suggestions are welcome via GitHub Issues.
 Reproducibility: All random seeds are fixed; results should be identical across runs on the same MATLAB version.
