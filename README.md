@@ -95,6 +95,7 @@ run run_baseline_comparison.m
 
 % 5. Perform statistical validation
 run run_statistical_validation.m
+```
 
 ---
 
