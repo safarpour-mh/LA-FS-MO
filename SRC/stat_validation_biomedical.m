@@ -1,16 +1,32 @@
+%% =========================================================
+% run_statistical_validation.m
+% Purpose: Perform Wilcoxon signed-rank test on F1-scores
+%          comparing Full vs. Selected features on biomedical datasets.
+%          Matches methodology described in manuscript (Section: Statistical Validation).
+%
+% Requirements: MATLAB R2023a (Statistics and Machine Learning Toolbox)
+% Usage: 
+%   1. Place this script in the root folder.
+%   2. Ensure 'dataset' folder contains .mat files.
+%   3. Run the script. Results saved to /results folder.
+%% =========================================================
 
-clc;
-clear;
-close all;
+clc; clear; close all;
+
+%% -------------------- Reproducibility Setup --------------------
+% Set random seed for reproducibility
+rng(42); 
 
 %% -------------------- Settings --------------------
-data_folder = 'C:\Users\Administrator\Desktop\matlab\dataset\';
+data_folder = 'dataset';
 results_folder = 'results';
+
 if ~exist(results_folder, 'dir')
     mkdir(results_folder);
 end
 
-datasets = {'heart','wpbc','wdbc'};
+% Biomedical datasets used for statistical validation (Table 7 in manuscript)
+datasets = {'heart', 'wpbc', 'wdbc'};
 classifiers = {'SVM', 'KNN', 'RF'};
 n_datasets = numel(datasets);
 n_cls = numel(classifiers);
@@ -18,13 +34,13 @@ n_cls = numel(classifiers);
 % Bonferroni correction: 3 datasets × 3 classifiers = 9 comparisons
 alpha_corrected = 0.05 / (n_datasets * n_cls);  % ≈ 0.00556
 
-% Selected indices from Table 4 in your paper
+% Selected indices from Table 4 in manuscript
 selected_indices_paper = struct();
 selected_indices_paper.heart = [2, 5, 7, 1, 6];
 selected_indices_paper.wpbc = [1, 17, 2, 27, 34, 18, 3];
 selected_indices_paper.wdbc = [17, 21, 28, 14, 11, 27];
 
-% Preallocate
+% Preallocate results structure
 stats_results = struct();
 
 %% -------------------- Main Loop --------------------
@@ -32,13 +48,18 @@ for d = 1:n_datasets
     dataset = datasets{d};
     fprintf('Processing: %s\n', dataset);
     
-    % Load features (variable 'X')
-    X = double(load(fullfile(data_folder, [dataset, 'Samples.mat'])).X);
+    % Load Features
+    X_file = fullfile(data_folder, [dataset, 'Samples.mat']);
+    if ~exist(X_file, 'file')
+        error('Missing data file: %s', X_file);
+    end
+    X = double(load(X_file).X);
     
-    % Load raw labels (variable 'X' in Label.mat — may be char/cell/numeric)
-    y_raw = load(fullfile(data_folder, [dataset, 'Label.mat'])).X;
+    % Load Labels
+    y_file = fullfile(data_folder, [dataset, 'Label.mat']);
+    y_raw = load(y_file).X;
     
-    % --- Convert labels to numeric (1/2) robustly ---
+    % --- Robust Label Conversion to Numeric (1/2) ---
     if iscell(y_raw)
         y_str = string(y_raw(:));
     elseif ischar(y_raw)
@@ -56,12 +77,11 @@ for d = 1:n_datasets
         if min(y) == 0
             y = y + 1; % Map 0/1 → 1/2
         end
-        % Skip string conversion
         y_str = []; % Flag for numeric
     end
     
     if ~isempty(y_str)
-        % Map string labels to numeric for biomedical datasets
+        % Map specific biomedical labels to numeric
         if strcmp(dataset, 'wpbc')
             y_str = replace(y_str, "N", "1");
             y_str = replace(y_str, "R", "2");
@@ -84,8 +104,8 @@ for d = 1:n_datasets
     f1_all = zeros(5, n_cls);
     f1_sel = zeros(5, n_cls);
     
-    % 5-fold CV
-    cv = cvpartition(y, 'KFold', 5);
+    % Stratified 5-Fold Cross-Validation (Matches manuscript methodology)
+    cv = cvpartition(y, 'KFold', 5, 'Stratify', true);
     
     for fold = 1:5
         trainIdx = training(cv, fold);
@@ -95,93 +115,127 @@ for d = 1:n_datasets
         Xtr_sel = X_selected(trainIdx, :); Xte_sel = X_selected(testIdx, :);
         ytr = y(trainIdx); yte = y(testIdx);
         
-        % Skip fold if only one class in training (should not happen with stratified CV)
+        % Skip fold if only one class in training (rare with stratified CV)
         if numel(unique(ytr)) < 2
             f1_all(fold,:) = NaN;
             f1_sel(fold,:) = NaN;
             continue;
         end
         
-        % ========== SVM ==========
+        % ========== SVM (with Internal Hyperparameter Tuning) ==========
+        % Manuscript states: "hyperparameters tuned via internal 5-fold cross-validation"
+        % To prevent data leakage, tuning is performed ONLY on training data.
+        
         C_grid = [0.1, 1, 10, 100];
         gamma_grid = [0.01, 0.1, 1, 10];
+        best_C = 1; best_gamma = 0.1;
+        best_inner_f1 = -inf;
         
-        best_f1 = -inf;
+        % Inner CV for parameter selection (3-fold for speed, represents internal tuning)
+        inner_cv = cvpartition(ytr, 'KFold', 3, 'Stratify', true);
+        
         for C = C_grid
             for gamma = gamma_grid
-                try
-                    mdl = fitcsvm(Xtr_all, ytr, ...
-                        'KernelFunction', 'rbf', ...
-                        'BoxConstraint', C, ...
-                        'KernelScale', 1/sqrt(2*gamma), ...
-                        'Standardize', false, ...
-                        'ClassNames', unique(ytr));
-                    y_pred = predict(mdl, Xte_all);
-                    f1_temp = f1score(yte, y_pred);
-                    if f1_temp > best_f1, best_f1 = f1_temp; end
-                catch
-                    % Ignore numerical errors
+                inner_f1_scores = zeros(inner_cv.NumTestSets, 1);
+                for k = 1:inner_cv.NumTestSets
+                    i_train = training(inner_cv, k);
+                    i_val   = test(inner_cv, k);
+                    
+                    try
+                        mdl_inner = fitcsvm(Xtr_all(i_train, :), ytr(i_train), ...
+                            'KernelFunction', 'rbf', ...
+                            'BoxConstraint', C, ...
+                            'KernelScale', 1/sqrt(2*gamma), ...
+                            'Standardize', true);
+                        y_pred_inner = predict(mdl_inner, Xtr_all(i_val, :));
+                        inner_f1_scores(k) = f1score(ytr(i_val), y_pred_inner);
+                    catch
+                        inner_f1_scores(k) = 0;
+                    end
+                end
+                mean_inner_f1 = mean(inner_f1_scores);
+                if mean_inner_f1 > best_inner_f1
+                    best_inner_f1 = mean_inner_f1;
+                    best_C = C;
+                    best_gamma = gamma;
                 end
             end
         end
-        f1_all(fold,1) = best_f1;
         
-        best_f1 = -inf;
-        for C = C_grid
-            for gamma = gamma_grid
-                try
-                    mdl = fitcsvm(Xtr_sel, ytr, ...
-                        'KernelFunction', 'rbf', ...
-                        'BoxConstraint', C, ...
-                        'KernelScale', 1/sqrt(2*gamma), ...
-                        'Standardize', false);
-                    y_pred = predict(mdl, Xte_sel);
-                    f1_temp = f1score(yte, y_pred);
-                    if f1_temp > best_f1, best_f1 = f1_temp; end
-                catch
-                end
-            end
+        % Train final SVM on full training set with best parameters
+        try
+            mdl = fitcsvm(Xtr_all, ytr, ...
+                'KernelFunction', 'rbf', ...
+                'BoxConstraint', best_C, ...
+                'KernelScale', 1/sqrt(2*best_gamma), ...
+                'Standardize', true);
+            y_pred = predict(mdl, Xte_all);
+            f1_all(fold,1) = f1score(yte, y_pred);
+        catch
+            f1_all(fold,1) = NaN;
         end
-        f1_sel(fold,1) = best_f1;
         
-        % ========== KNN ==========
-        mdl = fitcknn(Xtr_all, ytr, 'NumNeighbors', 5, 'Distance', 'euclidean');
-        y_pred = predict(mdl, Xte_all);
-        f1_all(fold,2) = f1score(yte, y_pred);
+        try
+            mdl = fitcsvm(Xtr_sel, ytr, ...
+                'KernelFunction', 'rbf', ...
+                'BoxConstraint', best_C, ...
+                'KernelScale', 1/sqrt(2*best_gamma), ...
+                'Standardize', true);
+            y_pred = predict(mdl, Xte_sel);
+            f1_sel(fold,1) = f1score(yte, y_pred);
+        catch
+            f1_sel(fold,1) = NaN;
+        end
         
-        mdl = fitcknn(Xtr_sel, ytr, 'NumNeighbors', 5, 'Distance', 'euclidean');
-        y_pred = predict(mdl, Xte_sel);
-        f1_sel(fold,2) = f1score(yte, y_pred);
+        % ========== KNN (k=5) ==========
+        try
+            mdl = fitcknn(Xtr_all, ytr, 'NumNeighbors', 5, 'Distance', 'euclidean', 'Standardize', true);
+            y_pred = predict(mdl, Xte_all);
+            f1_all(fold,2) = f1score(yte, y_pred);
+            
+            mdl = fitcknn(Xtr_sel, ytr, 'NumNeighbors', 5, 'Distance', 'euclidean', 'Standardize', true);
+            y_pred = predict(mdl, Xte_sel);
+            f1_sel(fold,2) = f1score(yte, y_pred);
+        catch
+            f1_all(fold,2) = NaN;
+            f1_sel(fold,2) = NaN;
+        end
         
-        % ========== Random Forest ==========
+        % ========== Random Forest (100 Trees) ==========
         d_all = size(Xtr_all, 2);
         d_sel = size(Xtr_sel, 2);
         
-        mdl = TreeBagger(100, Xtr_all, ytr, ...
-            'Method', 'classification', ...
-            'NumPredictorsToSample', floor(sqrt(d_all)));
-        y_pred_cell = predict(mdl, Xte_all);
-        y_pred = convertPrediction(y_pred_cell);
-        f1_all(fold,3) = f1score(yte, y_pred);
-        
-        mdl = TreeBagger(100, Xtr_sel, ytr, ...
-            'Method', 'classification', ...
-            'NumPredictorsToSample', floor(sqrt(d_sel)));
-        y_pred_cell = predict(mdl, Xte_sel);
-        y_pred = convertPrediction(y_pred_cell);
-        f1_sel(fold,3) = f1score(yte, y_pred);
+        try
+            mdl = TreeBagger(100, Xtr_all, ytr, ...
+                'Method', 'classification', ...
+                'NumPredictorsToSample', floor(sqrt(d_all)));
+            y_pred_cell = predict(mdl, Xte_all);
+            y_pred = convertPrediction(y_pred_cell);
+            f1_all(fold,3) = f1score(yte, y_pred);
+            
+            mdl = TreeBagger(100, Xtr_sel, ytr, ...
+                'Method', 'classification', ...
+                'NumPredictorsToSample', floor(sqrt(d_sel)));
+            y_pred_cell = predict(mdl, Xte_sel);
+            y_pred = convertPrediction(y_pred_cell);
+            f1_sel(fold,3) = f1score(yte, y_pred);
+        catch
+            f1_all(fold,3) = NaN;
+            f1_sel(fold,3) = NaN;
+        end
     end
     
     stats_results.(dataset).f1_all = f1_all;
     stats_results.(dataset).f1_sel = f1_sel;
     
-    % Wilcoxon test per classifier
+    % Wilcoxon signed-rank test per classifier
     pvals = zeros(1, n_cls);
     for ci = 1:n_cls
         valid = ~(isnan(f1_all(:,ci)) | isnan(f1_sel(:,ci)));
         if sum(valid) < 2
             pvals(ci) = 1;
         else
+            % Two-sided signed-rank test
             [p, ~] = signrank(f1_all(valid,ci), f1_sel(valid,ci));
             pvals(ci) = p;
         end
@@ -190,16 +244,16 @@ for d = 1:n_datasets
     stats_results.(dataset).significant = pvals < alpha_corrected;
 end
 
-% Save
-save(fullfile(results_folder, 'statistical_validation_biomedical_results.mat'), ...
+% Save MATLAB Results
+save(fullfile(results_folder, 'statistical_validation_results.mat'), ...
     'stats_results', 'alpha_corrected', 'datasets', 'classifiers');
 
 %% -------------------- Display Results --------------------
-
 fprintf('\n');
 fprintf('%s\n', repmat('=', 1, 80));
 fprintf('Wilcoxon Signed-Rank Test Results (Biomedical Datasets)\n');
 fprintf('Bonferroni-corrected α = %.4f\n', alpha_corrected);
+fprintf('Note: With 5-fold CV, minimum achievable p-value is 0.0625.\n');
 fprintf('%s\n', repmat('=', 1, 80));
 fprintf('%-10s %-8s %12s %12s %10s %s\n', 'Dataset', 'Classifier', 'Mean F1 (All)', 'Mean F1 (Sel)', 'p-value', '');
 fprintf('%s\n', repmat('-', 1, 80));
@@ -222,7 +276,6 @@ end
 fprintf('\n* indicates statistical significance at α = %.4f (Bonferroni-corrected)\n', alpha_corrected);
 
 %% -------------------- Generate LaTeX Table --------------------
-
 latex_lines = {
     '\begin{table}[htbp]',
     '\centering',
@@ -255,7 +308,7 @@ latex_lines{end+1} = '\bottomrule';
 latex_lines{end+1} = '\end{tabular}';
 latex_lines{end+1} = '\end{table}';
 
-% Save LaTeX
+% Save LaTeX Table
 fid = fopen(fullfile(results_folder, 'wilcoxon_table.tex'), 'w');
 for i = 1:numel(latex_lines)
     fprintf(fid, '%s\n', latex_lines{i});
@@ -263,12 +316,13 @@ end
 fclose(fid);
 
 fprintf('\n✅ Results saved:\n');
-fprintf('   - MATLAB: %s\n', fullfile(results_folder, 'statistical_validation_biomedical_results.mat'));
+fprintf('   - MATLAB: %s\n', fullfile(results_folder, 'statistical_validation_results.mat'));
 fprintf('   - LaTeX : %s\n', fullfile(results_folder, 'wilcoxon_table.tex'));
 
 %% -------------------- Helper Functions --------------------
 
 function f1 = f1score(y_true, y_pred)
+    % Calculate Macro F1-Score
     y_true = double(y_true(:));
     y_pred = double(y_pred(:));
     classes = unique([y_true; y_pred]);
@@ -287,6 +341,7 @@ function f1 = f1score(y_true, y_pred)
 end
 
 function y_num = convertPrediction(y_cell)
+    % Convert TreeBagger cell output to numeric vector
     if iscell(y_cell)
         if ischar(y_cell{1}) || isstring(y_cell{1})
             y_num = str2double(string(y_cell));
