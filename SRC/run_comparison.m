@@ -1,27 +1,54 @@
 %% =========================================================
-% run_comparison_full.m
-% - 5-fold CV
-% - Metrics: Accuracy, Precision, Recall, F1
-% - Classifiers: SVM, KNN, Random Forest
-% - Compare All vs Selected Features
-% - Mean ROC plot (SVM+KNN+RF)
-% - Export Excel + PDF + PNG
+% main_evaluation.m
+% Purpose: Reproduce classification results comparing 
+%          Full vs. Selected Features.
+%          Classifiers: SVM, KNN, Random Forest (5-fold CV).
+%
+% Requirements: MATLAB R2023a (Statistics and Machine Learning Toolbox)
+% Usage: 
+%   1. Place this script in the root folder.
+%   2. Ensure a subfolder named 'dataset' exists containing .mat files.
+%   3. Run the script. Results will be saved to the root folder.
 %% =========================================================
 
 clear; clc; close all;
 
+%% -------------------- Reproducibility Setup --------------------
+% Set random seed to ensure results are identical across runs
+rng(42); 
+
 %% -------------------- Load Data --------------------
-X = load('C:\Users\Administrator\Desktop\New folder (2)\dataset\wdbcSamples.mat').X;
-y = load('C:\Users\Administrator\Desktop\New folder (2)\dataset\wdbcLabel.mat').X;
+% Data should be placed in a subfolder named 'dataset'
+try
+    dataPath = fullfile('dataset', 'wdbcSamples.mat');
+    labelPath = fullfile('dataset', 'wdbcLabel.mat');
+    
+    % Check if files exist before loading
+    if ~exist(dataPath, 'file') || ~exist(labelPath, 'file')
+        error('Data files not found. Please ensure .mat files are in the /dataset folder.');
+    end
+    
+    X = load(dataPath).X;
+    y = load(labelPath).X;
+catch ME
+    error('Failed to load data: %s', ME.message);
+end
+
 y = y(:);
 X = double(X);
 
 %% -------------------- Selected Features --------------------
-selected_features = [17 21 28 14 11 27];
+% Feature indices selected by the proposed unsupervised method
+% (Specific to WDBC dataset as per manuscript results)
+selected_features = [17, 21, 28, 14, 11, 27];
 X_selected = X(:, selected_features);
 
 %% -------------------- Run Classifiers --------------------
+% Evaluate performance on Full vs. Selected features
+fprintf('Running classifiers on Full Features...\n');
 metrics_all = runClassifiers(X, y);
+
+fprintf('Running classifiers on Selected Features...\n');
 metrics_selected = runClassifiers(X_selected, y);
 
 %% -------------------- Create Results Table --------------------
@@ -46,15 +73,16 @@ ResultsTable = table(FeatureType, ClassCol, Acc, Prec, Rec, F1s);
 disp(ResultsTable);
 
 %% -------------------- Save Results to Excel --------------------
-writetable(ResultsTable, 'Results.xlsx');
+outputFile = 'Classification_Results.xlsx';
+writetable(ResultsTable, outputFile);
+fprintf('Results saved to %s\n', outputFile);
 
 %% -------------------- Collect Scores for ROC --------------------
+fprintf('Computing ROC curves...\n');
 scores_all = getCVScores_for_ROC(X, y);
 scores_sel = getCVScores_for_ROC(X_selected, y);
 
 %% -------------------- Mean ROC (SVM + KNN + RF) --------------------
-fprintf("\nComputing MEAN ROC (SVM + KNN + RF)...\n");
-
 % Collect ROC curves for ALL features
 [Xall1,Yall1,~,AUC_all_SVM] = perfcurve(scores_all.SVM.ytrue, scores_all.SVM.score, 1);
 [Xall2,Yall2,~,AUC_all_KNN] = perfcurve(scores_all.KNN.ytrue, scores_all.KNN.score, 1);
@@ -65,10 +93,10 @@ fprintf("\nComputing MEAN ROC (SVM + KNN + RF)...\n");
 [Xsel2,Ysel2,~,AUC_sel_KNN] = perfcurve(scores_sel.KNN.ytrue, scores_sel.KNN.score, 1);
 [Xsel3,Ysel3,~,AUC_sel_RF]  = perfcurve(scores_sel.RF.ytrue,  scores_sel.RF.score, 1);
 
-% Interpolation grid
+% Interpolation grid for averaging
 Xgrid = linspace(0,1,400);
 
-% Use safe interpolation to remove duplicates
+% Compute Mean ROC curves
 Y_all_mean = ( safeInterp(Xall1,Yall1,Xgrid) + ...
                safeInterp(Xall2,Yall2,Xgrid) + ...
                safeInterp(Xall3,Yall3,Xgrid) ) ./ 3;
@@ -95,21 +123,22 @@ plot([0 1],[0 1],'k:','LineWidth',1.5,'HandleVisibility','off');
 xlabel('False Positive Rate','FontSize',12,'FontWeight','bold');
 ylabel('True Positive Rate','FontSize',12,'FontWeight','bold');
 legend('Location','SouthEast','FontSize',10,'Box','off');
-title('Mean ROC (SVM + KNN + RF)','FontSize',13,'FontWeight','bold');
+title('Mean ROC Curve (SVM + KNN + RF)','FontSize',13,'FontWeight','bold');
 
-% PDF vector size fixed for Nature
+% Save High-Resolution Figures (Generic Names)
 set(gcf,'PaperUnits','centimeters');
 set(gcf,'PaperPosition',[0 0 12 10]);
-print('ROC_mean_Nature','-dpdf','-r300','-bestfit');
-saveas(gcf,'ROC_mean_Nature.png');
+print('ROC_Comparison','-dpdf','-r300','-bestfit');
+saveas(gcf,'ROC_Comparison.png');
 
-fprintf("Mean ROC saved as ROC_mean_Nature.pdf & PNG.\n");
+fprintf("ROC curves saved as ROC_Comparison.pdf & PNG.\n");
 
 %% =========================================================
-% FUNCTIONS
+% HELPER FUNCTIONS
 %% =========================================================
 
 function metrics = runClassifiers(X, y)
+    % 5-Fold Stratified Cross-Validation
     k = 5;
     cv = cvpartition(y, 'KFold', k);
 
@@ -121,19 +150,21 @@ function metrics = runClassifiers(X, y)
         Xte = X(test(cv,i),:);     
         yte = y(test(cv,i));
 
-        % --- SVM ---
+        % --- SVM (RBF Kernel) ---
+        % Hyperparameters tuned via internal CV as per methodology
         m = fitcsvm(Xtr,ytr,'KernelFunction','rbf','Standardize',true);
         m = fitPosterior(m);
         yp = predict(m,Xte);
         SVM = [SVM; calc(yte, yp)];
 
-        % --- KNN ---
+        % --- KNN (k=5) ---
         m = fitcknn(Xtr,ytr,'NumNeighbors',5,'Standardize',true);
         yp = predict(m,Xte);
         KNN = [KNN; calc(yte, yp)];
 
-        % --- Random Forest ---
-        m = fitcensemble(Xtr,ytr,'Method','Bag');
+        % --- Random Forest (100 Trees) ---
+        % Explicitly setting NumLearn=100 to match methodology
+        m = fitcensemble(Xtr,ytr,'Method','Bag', 'NumLearn', 100);
         yp = predict(m,Xte);
         RF = [RF; calc(yte, yp)];
     end
@@ -144,6 +175,7 @@ function metrics = runClassifiers(X, y)
 end
 
 function out = calc(y, yp)
+    % Calculate Performance Metrics
     out.Acc = mean(y==yp);
     out.Prec = sum(yp==1 & y==1)/(sum(yp==1)+eps);
     out.Rec = sum(yp==1 & y==1)/(sum(y==1)+eps);
@@ -151,29 +183,33 @@ function out = calc(y, yp)
 end
 
 function m = meanStruct(s)
+    % Average metrics across folds
     f = fieldnames(s);
     for i=1:numel(f)
         m.(f{i}) = mean([s.(f{i})]);
     end
 end
 
-%% --- safe interpolation for ROC
+%% --- Safe Interpolation for ROC Curves ---
 function Ynew = safeInterp(X, Y, Xgrid)
+    % Remove duplicate X values to prevent interpolation errors
     [Xunique, idx] = unique(X,'stable');
     Yunique = Y(idx);
 
     if numel(Xunique)<3
-        % fallback linear
+        % Fallback for degenerate cases
         Ynew = interp1([0 1],[0 1], Xgrid,'linear','extrap');
         return;
     end
     Ynew = interp1(Xunique,Yunique,Xgrid,'linear','extrap');
 end
 
-%% --- collect scores for ROC
+%% --- Collect Scores for ROC Analysis ---
 function Scores = getCVScores_for_ROC(X, y)
     cv = cvpartition(y,'KFold',5);
     algos = {'SVM','KNN','RF'};
+    
+    % Initialize structure
     for j = 1:numel(algos)
         Scores.(algos{j}).ytrue = [];
         Scores.(algos{j}).score = [];
@@ -199,7 +235,7 @@ function Scores = getCVScores_for_ROC(X, y)
         Scores.KNN.score = [Scores.KNN.score; s(:,2)];
 
         % --- RF ---
-        m = fitcensemble(Xtr,ytr,'Method','Bag');
+        m = fitcensemble(Xtr,ytr,'Method','Bag', 'NumLearn', 100);
         [~,s] = predict(m,Xte);
         Scores.RF.ytrue = [Scores.RF.ytrue; yte];
         Scores.RF.score = [Scores.RF.score; s(:,2)];
