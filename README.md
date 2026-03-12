@@ -18,14 +18,16 @@ A fuzzy crowding-distance mechanism promotes diversity by prioritizing features 
 
 ## 📂 Repository Structure
 
-├── main_evaluation.m # Main script: Full vs. Selected features comparison (single dataset)
+├── main_evaluation.m # Main script: Full vs. Selected features (single dataset)
 ├── run_comparison_eight_datasets.m # Batch evaluation across 8 benchmark datasets
 ├── run_baseline_comparison.m # Comparison with unsupervised baselines (Laplacian, MCFS, UDFS)
 ├── run_statistical_validation.m # Wilcoxon signed-rank test implementation
-├── dataset/ # Place .mat files here (wdbcSamples.mat, wdbcLabel.mat, etc.)
+├── dataset/ # Original .mat files (for MATLAB compatibility)
+│ ├── wdbcSamples.mat, wdbcLabel.mat, ...
+├── datasets_CSV/ # ✅ Human-readable CSV versions of all datasets
+│ ├── wdbc_features.csv, wdbc_labels.csv, ...
 ├── results/ # Output folder for tables and figures (auto-created)
 └── README.md # This file
-
 
 
 
@@ -48,9 +50,32 @@ All benchmark datasets are publicly available from the **UCI Machine Learning Re
 | segment | 2310 | 19 | Image segmentation |
 | zoo | 101 | 16 | Animal taxonomy |
 
-**Data Format:** Each dataset consists of two `.mat` files:
-- `[name]Samples.mat`: Feature matrix `X` (n × d)
-- `[name]Label.mat`: Label vector `y` (n × 1) — *used only for downstream evaluation, not for feature selection*
+### Data Formats
+All datasets are provided in **two formats** for maximum accessibility:
+- **MATLAB `.mat` files** (`[name]Samples.mat`, `[name]Label.mat`): For direct use with the provided MATLAB scripts.
+- **Human-readable CSV files** (`[name]_features.csv`, `[name]_labels.csv`): Located in the `datasets_CSV/` folder, these files enable inspection and reuse in Python, R, or other environments without MATLAB.
+
+**CSV Structure:**
+- `[name]_features.csv`: Feature matrix with columns `Feature_1, Feature_2, ..., Feature_d`
+- `[name]_labels.csv`: Single-column label vector (`Label`)
+- Both files have matching row ordering (sample-wise alignment)
+
+---
+
+## 🔬 Methodology Summary
+
+The proposed framework operates in three sequential, label-free steps:
+
+1. **Feature Scoring**: Each feature $f_j$ is independently evaluated using two non-parametric objectives:
+   - Discretized Shannon entropy ($K=5$ uniform bins) for distributional informativeness
+   - Inverted Davies–Bouldin Index (1D k-means, $k=2$) for structural coherence
+
+2. **Diversity-Aware Ranking**: A fuzzy crowding-distance score computes each feature's degree of "informative isolation" in the bi-objective space, promoting non-redundancy without pairwise comparisons.
+
+3. **Subset Selection**: The top $r = \max(5, \lceil 0.2 \cdot d \rceil)$ features are selected, ensuring compactness while preserving predictive utility.
+
+*No class labels are accessed during steps 1–3.*
+
 
 ---
 
